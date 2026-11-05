@@ -5,7 +5,6 @@ import html
 import uuid
 
 from urllib.parse import urlparse
-
 from aiohttp import web
 
 from aiogram import Bot, Dispatcher, F
@@ -26,24 +25,19 @@ from aiogram.enums import ParseMode
 # =========================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 PORT = int(os.getenv("PORT", "10000"))
-
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
-
 DB_PATH = os.getenv("DB_PATH", "users.db")
 
 if not BOT_TOKEN:
     raise RuntimeError("Не задан BOT_TOKEN")
 
-if not OWNER_ID:
-    raise RuntimeError("Не задан OWNER_ID")
-
 if not RENDER_URL:
     raise RuntimeError("Не найден RENDER_EXTERNAL_URL")
 
 WEBHOOK_URL = f"{RENDER_URL}/webhook"
+
 
 bot = Bot(
     token=BOT_TOKEN,
@@ -53,7 +47,6 @@ bot = Bot(
 )
 
 dp = Dispatcher()
-
 offers = {}
 
 
@@ -62,13 +55,15 @@ offers = {}
 # =========================
 
 db = sqlite3.connect(DB_PATH)
+
 db.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     username TEXT,
-    access INTEGER DEFAULT 0
+    access INTEGER DEFAULT 1
 )
 """)
+
 db.commit()
 
 
@@ -76,8 +71,8 @@ def save_user(user_id, username):
     username = username.lower() if username else None
 
     db.execute("""
-    INSERT INTO users (user_id, username)
-    VALUES (?, ?)
+    INSERT INTO users (user_id, username, access)
+    VALUES (?, ?, 1)
     ON CONFLICT(user_id)
     DO UPDATE SET username = excluded.username
     """, (user_id, username))
@@ -94,24 +89,6 @@ def get_user_by_username(username):
     ).fetchone()
 
     return result[0] if result else None
-
-
-def has_access(user_id):
-    result = db.execute(
-        "SELECT access FROM users WHERE user_id = ?",
-        (user_id,)
-    ).fetchone()
-
-    return bool(result and result[0])
-
-
-def give_access(user_id):
-    db.execute("""
-    UPDATE users
-    SET access = 1
-    WHERE user_id = ?
-    """, (user_id,))
-    db.commit()
 
 
 # =========================
@@ -154,99 +131,18 @@ def transfer_keyboard():
 
 @dp.message(F.text == "/start")
 async def start(message: Message):
-
     user = message.from_user
 
     save_user(user.id, user.username)
 
-    if has_access(user.id):
-        await message.answer(
-            "✅ <b>Доступ уже открыт!</b>\n\n"
-            "Теперь вы можете создавать предложения "
-            "через команду <code>.buy</code>."
-        )
-        return
-
     await message.answer(
         "👋 <b>Добро пожаловать!</b>\n\n"
-        "Для использования функций бота необходимо "
-        "получить доступ.\n\n"
-        "🔐 Чтобы получить доступ, напишите владельцу:\n"
-        "👉 <a href='https://t.me/WellKrai'>@WellKrai</a>\n\n"
-        "После выдачи доступа вы сможете создавать "
-        "предложения через команду <code>.buy</code>."
+        "✅ Доступ к боту открыт!\n\n"
+        "Теперь вы можете создавать предложения "
+        "через команду <code>.buy</code>.\n\n"
+        "📌 Пример использования:\n"
+        "<code>.buy https://t.me/nft/123 100 stars</code>"
     )
-
-
-# =========================
-# СОХРАНЕНИЕ USERNAME
-# =========================
-
-@dp.message()
-async def remember_user(message: Message):
-    user = message.from_user
-
-    if user:
-        save_user(user.id, user.username)
-
-
-# =========================
-# ВЫДАЧА ДОСТУПА
-# =========================
-
-@dp.message(F.text.startswith("/WellBuy"))
-async def admin_give_access(message: Message):
-
-    if message.from_user.id != OWNER_ID:
-        return
-
-    parts = message.text.split(maxsplit=1)
-
-    if len(parts) != 2:
-        await message.answer(
-            "❌ Использование:\n"
-            "<code>/WellBuy @username</code>"
-        )
-        return
-
-    username = parts[1].strip()
-
-    if not username.startswith("@"):
-        await message.answer(
-            "❌ Укажи username через @."
-        )
-        return
-
-    user_id = get_user_by_username(username)
-
-    if user_id is None:
-        await message.answer(
-            "❌ Пользователь не найден.\n\n"
-            "Попроси его сначала запустить бота "
-            "через /start."
-        )
-        return
-
-    give_access(user_id)
-
-    await message.answer(
-        f"✅ Доступ пользователю {html.escape(username)} открыт!"
-    )
-
-    try:
-        await bot.send_message(
-            user_id,
-            "🎉 <b>Доступ открыт!</b>\n\n"
-            "Теперь вы можете создавать предложения "
-            "через команду <code>.buy</code>.\n\n"
-            "Пример:\n"
-            "<code>.buy https://t.me/nft/123 100 stars</code>"
-        )
-    except Exception:
-        await message.answer(
-            "⚠️ Доступ выдан, но уведомление пользователю "
-            "отправить не удалось."
-        )
 
 
 # =========================
@@ -255,18 +151,9 @@ async def admin_give_access(message: Message):
 
 @dp.message(F.text.startswith(".buy "))
 async def create_offer(message: Message):
-
     user = message.from_user
 
     save_user(user.id, user.username)
-
-    if not has_access(user.id):
-        await message.answer(
-            "❌ У вас пока нет доступа.\n\n"
-            "Для получения доступа напишите "
-            "<a href='https://t.me/WellKrai'>@WellKrai</a>."
-        )
-        return
 
     try:
         parts = message.text.split(maxsplit=3)
@@ -291,7 +178,7 @@ async def create_offer(message: Message):
 
         parsed = urlparse(gift_link)
 
-        if parsed.scheme not in ("http", "https"):
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise ValueError
 
         offer_id = uuid.uuid4().hex[:10]
@@ -332,7 +219,6 @@ async def create_offer(message: Message):
 
 @dp.callback_query(F.data.startswith("accept:"))
 async def accept_offer(callback: CallbackQuery):
-
     offer_id = callback.data.split(":", 1)[1]
 
     if offer_id not in offers:
@@ -364,7 +250,6 @@ async def accept_offer(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("decline:"))
 async def decline_offer(callback: CallbackQuery):
-
     offer_id = callback.data.split(":", 1)[1]
 
     offers.pop(offer_id, None)
@@ -377,6 +262,18 @@ async def decline_offer(callback: CallbackQuery):
 
 
 # =========================
+# СОХРАНЕНИЕ USERNAME
+# =========================
+
+@dp.message()
+async def remember_user(message: Message):
+    user = message.from_user
+
+    if user:
+        save_user(user.id, user.username)
+
+
+# =========================
 # WEBHOOK
 # =========================
 
@@ -385,7 +282,6 @@ async def health(request):
 
 
 async def webhook(request):
-
     if WEBHOOK_SECRET:
         received = request.headers.get(
             "X-Telegram-Bot-Api-Secret-Token"
@@ -406,10 +302,12 @@ async def webhook(request):
     return web.Response(text="OK")
 
 
+# =========================
+# ЗАПУСК
+# =========================
+
 async def main():
 
-    # В меню будет только /start.
-    # /WellBuy останется скрытой.
     await bot.set_my_commands([
         BotCommand(
             command="start",
@@ -428,6 +326,7 @@ async def main():
     )
 
     runner = web.AppRunner(app)
+
     await runner.setup()
 
     site = web.TCPSite(
@@ -440,9 +339,11 @@ async def main():
 
     print("Bot started successfully!")
     print("Webhook is active!")
+    print("Free access enabled!")
 
     try:
         await asyncio.Event().wait()
+
     finally:
         await bot.delete_webhook()
         await runner.cleanup()
