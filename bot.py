@@ -83,7 +83,7 @@ def save_user(user_id, username):
 TEXTS = {
     "ru": {
         "welcome": "👋 <b>Добро пожаловать!</b>\n\n"
-                   "✅ Доступ к демонстрационному боту открыт!\n\n"
+                   "✅ Доступ к боту открыт!\n\n"
                    "Пример:\n"
                    "<code>.buy https://t.me/nft/123 1700 stars ru</code>",
         "bad_format": "❌ Неверный формат.\n\n"
@@ -92,14 +92,14 @@ TEXTS = {
         "bad_language": "❌ Язык должен быть ru, en, ch или ar.",
         "bad_price": "❌ Цена должна быть положительным числом.",
         "bad_link": "❌ Укажите корректную ссылку http или https.",
-        "title": "🎁 <b>Демонстрационное предложение</b>",
+        "title": "🎁 <b>Предложение</b>",
         "gift": "🎁 Подарок",
         "price": "💰 Цена",
         "expires": "Действует 24 часа",
         "show": "🎁 Показать подарок",
         "accept": "✅ Принять",
         "decline": "❌ Отклонить",
-        "demo": "⚠️ <i>Демонстрационный макет. "
+        "demo": "⚠️ <i>Макет для показа. "
                 "Реальная сделка и передача подарка не выполняются.</i>",
         "accepted": "✅ <b>Предложение принято!</b>",
         "instructions": "📩 <b>Инструкция</b>\n\n"
@@ -113,7 +113,7 @@ TEXTS = {
     },
     "en": {
         "welcome": "👋 <b>Welcome!</b>\n\n"
-                   "✅ Demo bot access is open!\n\n"
+                   "✅ Bot access is open!\n\n"
                    "Example:\n"
                    "<code>.buy https://t.me/nft/123 1700 stars en</code>",
         "bad_format": "❌ Invalid format.\n\n"
@@ -122,14 +122,14 @@ TEXTS = {
         "bad_language": "❌ Language must be ru, en, ch, or ar.",
         "bad_price": "❌ Price must be a positive number.",
         "bad_link": "❌ Enter a valid http or https link.",
-        "title": "🎁 <b>Demonstration offer</b>",
+        "title": "🎁 <b>Offer</b>",
         "gift": "🎁 Gift",
         "price": "💰 Price",
         "expires": "Expires in 24 hours",
         "show": "🎁 Show gift",
         "accept": "✅ Accept",
         "decline": "❌ Decline",
-        "demo": "⚠️ <i>Demo mockup. No real transaction "
+        "demo": "⚠️ <i>Preview mockup. No real transaction "
                 "or gift transfer takes place.</i>",
         "accepted": "✅ <b>Offer accepted!</b>",
         "instructions": "📩 <b>Instructions</b>\n\n"
@@ -142,7 +142,7 @@ TEXTS = {
     },
     "ch": {
         "welcome": "👋 <b>欢迎！</b>\n\n"
-                   "✅ 演示机器人已开放使用！\n\n"
+                   "✅ 机器人使用权限已开放！\n\n"
                    "示例：\n"
                    "<code>.buy https://t.me/nft/123 1700 stars ch</code>",
         "bad_format": "❌ 格式错误。\n\n"
@@ -151,14 +151,14 @@ TEXTS = {
         "bad_language": "❌ 语言必须是 ru、en、ch 或 ar。",
         "bad_price": "❌ 价格必须大于零。",
         "bad_link": "❌ 请输入有效的 http 或 https 链接。",
-        "title": "🎁 <b>演示报价</b>",
+        "title": "🎁 <b>礼物报价</b>",
         "gift": "🎁 礼物",
         "price": "💰 价格",
         "expires": "有效期为 24 小时",
         "show": "🎁 查看礼物",
         "accept": "✅ 接受",
         "decline": "❌ 拒绝",
-        "demo": "⚠️ <i>演示界面，不会执行真实交易或礼物转移。</i>",
+        "demo": "⚠️ <i>仅供展示，不会执行真实交易或礼物转移。</i>",
         "accepted": "✅ <b>已接受报价！</b>",
         "instructions": "📩 <b>操作说明</b>\n\n"
                         "1. 请先阅读交易条件。\n"
@@ -170,7 +170,7 @@ TEXTS = {
     },
     "ar": {
         "welcome": "👋 <b>مرحباً!</b>\n\n"
-                   "✅ البوت التجريبي متاح الآن!\n\n"
+                   "✅ البوت متاح الآن!\n\n"
                    "مثال:\n"
                    "<code>.buy https://t.me/nft/123 1700 stars ar</code>",
         "bad_format": "❌ تنسيق غير صحيح.\n\n"
@@ -179,14 +179,14 @@ TEXTS = {
         "bad_language": "❌ اللغة يجب أن تكون ru أو en أو ch أو ar.",
         "bad_price": "❌ يجب أن يكون السعر رقماً موجباً.",
         "bad_link": "❌ أدخل رابط http أو https صالحاً.",
-        "title": "🎁 <b>عرض تجريبي</b>",
+        "title": "🎁 <b>عرض الهدية</b>",
         "gift": "🎁 الهدية",
         "price": "💰 السعر",
         "expires": "صالح لمدة 24 ساعة",
         "show": "🎁 عرض الهدية",
         "accept": "✅ قبول",
         "decline": "❌ رفض",
-        "demo": "⚠️ <i>نموذج تجريبي. لا تتم أي معاملة "
+        "demo": "⚠️ <i>نموذج للعرض فقط. لا تتم أي معاملة "
                 "حقيقية أو عملية نقل للهدية.</i>",
         "accepted": "✅ <b>تم قبول العرض!</b>",
         "instructions": "📩 <b>التعليمات</b>\n\n"
@@ -319,8 +319,6 @@ async def create_offer(message: Message):
         disable_web_page_preview=False,
     )
 
-    # Try removing the original command.
-    # This depends on Telegram chat type and bot permissions.
     try:
         await message.delete()
     except TelegramAPIError:
