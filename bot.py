@@ -458,6 +458,7 @@ async def expiry_worker() -> None:
 # ==========================================
 async def main() -> None:
     bot = Bot(token=BOT_TOKEN)
+    await bot.delete_webhook(drop_pending_updates=True)
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
     expiry_task = asyncio.create_task(expiry_worker())
