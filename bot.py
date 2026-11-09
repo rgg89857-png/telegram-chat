@@ -27,6 +27,8 @@ from aiogram.exceptions import TelegramAPIError
 # =========================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_OWNER_ID = 8638834410
+
 PORT = int(os.getenv("PORT", "10000"))
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
@@ -425,6 +427,7 @@ async def main():
     runner = web.AppRunner(app)
     await runner.setup()
 
+    await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
