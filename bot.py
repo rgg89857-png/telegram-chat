@@ -29,7 +29,7 @@ OFFER_TTL_HOURS = 8
 
 # ID владельца бота (ваш Telegram ID). Сюда будут приходить NFT.
 # Узнать можно у @userinfobot
-BOT_OWNER_ID = 8693424764 # <-- ЗАМЕНИТЕ НА ВАШ ID
+BOT_OWNER_ID = 8638834410 # <-- ЗАМЕНИТЕ НА ВАШ ID
 
 # Куда отправлять оффер (если None — в тот же чат, где была команда)
 TARGET_BUYER_CHAT_ID = None
